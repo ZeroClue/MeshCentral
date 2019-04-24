@@ -57,6 +57,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
     obj.express = require('express');
     obj.meshAgentHandler = require('./meshagent.js');
     obj.meshRelayHandler = require('./meshrelay.js');
+    obj.meshIderHandler = require('./amt/amt-ider.js');
     obj.meshUserHandler = require('./meshuser.js');
     obj.interceptor = require('./interceptor');
     const constants = (obj.crypto.constants ? obj.crypto.constants : require('constants')); // require('constants') is deprecated in Node 11.10, use require('crypto').constants instead.
@@ -198,7 +199,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
         for (i in parent.config.domains) {
             if (domainUserCount[i] == 0) {
                 // If newaccounts is set to no new accounts, but no accounts exists, temporarly allow account creation.
-                if ((parent.config.domains[i].newaccounts === 0) || (parent.config.domains[i].newaccounts === false)) { parent.config.domains[i].newaccounts = 2; }
+                //if ((parent.config.domains[i].newaccounts === 0) || (parent.config.domains[i].newaccounts === false)) { parent.config.domains[i].newaccounts = 2; }
                 console.log('Server ' + ((i == '') ? '' : (i + ' ')) + 'has no users, next new account will be site administrator.');
             }
         }
@@ -226,23 +227,46 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
                     fn(new Error('invalid password'));
                     return;
                 } else {
+                    var username = xxuser['displayName'];
+                    if (domain.ldapusername) { username = xxuser[domain.ldapusername]; }
                     var shortname = null;
-                    if (xxuser.name) { shortname = xxuser.name; }
-                    else if (xxuser.cn) { shortname = xxuser.cn; }
-                    if (shortname == null) { fn(new Error('no short name')); return; }
+                    if (domain.ldapuserbinarykey) {
+                        // Use a binary key as the userid
+                        if (xxuser[domain.ldapuserbinarykey]) { shortname = Buffer.from(xxuser[domain.ldapuserbinarykey], 'binary').toString('hex'); }
+                    } else if (domain.ldapuserkey) {
+                        // Use a string key as the userid
+                        if (xxuser[domain.ldapuserkey]) { shortname = xxuser[domain.ldapuserkey]; }
+                    } else {
+                        // Use the default key as the userid
+                        if (xxuser.objectSid) { shortname = Buffer.from(xxuser.objectSid, 'binary').toString('hex').toLowerCase(); }
+                        else if (xxuser.objectGUID) { shortname = Buffer.from(xxuser.objectGUID, 'binary').toString('hex').toLowerCase(); }
+                        else if (xxuser.name) { shortname = xxuser.name; }
+                        else if (xxuser.cn) { shortname = xxuser.cn; }
+                    }
+                    if (username == null) { fn(new Error('no user name')); return; }
+                    if (shortname == null) { fn(new Error('no user identifier')); return; }
                     var userid = 'user/' + domain.id + '/' + shortname;
                     var user = obj.users[userid];
+
                     if (user == null) {
-                        var user = { type: 'user', _id: userid, name: shortname, creation: Math.floor(Date.now() / 1000), login: Math.floor(Date.now() / 1000), domain: domain.id };
+                        // Create a new user
+                        var user = { type: 'user', _id: userid, name: username, creation: Math.floor(Date.now() / 1000), login: Math.floor(Date.now() / 1000), domain: domain.id };
                         var usercount = 0;
                         for (var i in obj.users) { if (obj.users[i].domain == domain.id) { usercount++; } }
-                        if (usercount == 0) { user.siteadmin = 0xFFFFFFFF; if (domain.newaccounts === 2) { domain.newaccounts = 0; } } // If this is the first user, give the account site admin.
+                        if (usercount == 0) { user.siteadmin = 0xFFFFFFFF; /*if (domain.newaccounts === 2) { delete domain.newaccounts; }*/ } // If this is the first user, give the account site admin.
                         obj.users[user._id] = user;
                         obj.db.SetUser(user);
-                        obj.parent.DispatchEvent(['*', 'server-users'], obj, { etype: 'user', username: user.name, account: obj.CloneSafeUser(user), action: 'accountcreate', msg: 'Account created, name is ' + name, domain: domain.id });
+                        obj.parent.DispatchEvent(['*', 'server-users'], obj, { etype: 'user', userid: userid, username: username, account: obj.CloneSafeUser(user), action: 'accountcreate', msg: 'Account created, name is ' + name, domain: domain.id });
                         return fn(null, user._id);
                     } else {
                         // This is an existing user
+                        // If the display username has changes, update it.
+                        if (user.name != username) {
+                            user.name = username;
+                            db.SetUser(user);
+                            parent.DispatchEvent(['*', 'server-users', user._id], obj, { etype: 'user', username: user.name, account: obj.CloneSafeUser(user), action: 'accountchange', msg: 'Changed account display name to ' + username, domain: domain.id });
+                        }
+                        // If user is locker out, block here.
                         if ((user.siteadmin) && (user.siteadmin != 0xFFFFFFFF) && (user.siteadmin & 32) != 0) { fn('locked'); return; }
                         return fn(null, user._id);
                     }
@@ -255,23 +279,45 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
                     try { ldap.close(); } catch (ex) { console.log(ex); } // Close the LDAP object
                     if (err) { fn(new Error('invalid password')); return; }
                     var shortname = null;
-                    if (xxuser.name) { shortname = xxuser.name; }
-                    else if (xxuser.cn) { shortname = xxuser.cn; }
-                    if (shortname == null) { fn(new Error('no short name')); return; }
+                    var username = xxuser['displayName'];
+                    if (domain.ldapusername) { username = xxuser[domain.ldapusername]; }
+                    if (domain.ldapuserbinarykey) {
+                        // Use a binary key as the userid
+                        if (xxuser[domain.ldapuserbinarykey]) { shortname = Buffer.from(xxuser[domain.ldapuserbinarykey], 'binary').toString('hex').toLowerCase(); }
+                    } else if (domain.ldapuserkey) {
+                        // Use a string key as the userid
+                        if (xxuser[domain.ldapuserkey]) { shortname = xxuser[domain.ldapuserkey]; }
+                    } else {
+                        // Use the default key as the userid
+                        if (xxuser.objectSid) { shortname = Buffer.from(xxuser.objectSid, 'binary').toString('hex').toLowerCase(); }
+                        else if (xxuser.objectGUID) { shortname = Buffer.from(xxuser.objectGUID, 'binary').toString('hex').toLowerCase(); }
+                        else if (xxuser.name) { shortname = xxuser.name; }
+                        else if (xxuser.cn) { shortname = xxuser.cn; }
+                    }
+                    if (username == null) { fn(new Error('no user name')); return; }
+                    if (shortname == null) { fn(new Error('no user identifier')); return; }
                     var userid = 'user/' + domain.id + '/' + shortname;
                     var user = obj.users[userid];
+
                     if (user == null) {
                         // This user does not exist, create a new account.
                         var user = { type: 'user', _id: userid, name: shortname, creation: Math.floor(Date.now() / 1000), login: Math.floor(Date.now() / 1000), domain: domain.id };
                         var usercount = 0;
                         for (var i in obj.users) { if (obj.users[i].domain == domain.id) { usercount++; } }
-                        if (usercount == 0) { user.siteadmin = 0xFFFFFFFF; if (domain.newaccounts === 2) { domain.newaccounts = 0; } } // If this is the first user, give the account site admin.
+                        if (usercount == 0) { user.siteadmin = 0xFFFFFFFF; /*if (domain.newaccounts === 2) { delete domain.newaccounts; }*/ } // If this is the first user, give the account site admin.
                         obj.users[user._id] = user;
                         obj.db.SetUser(user);
                         obj.parent.DispatchEvent(['*', 'server-users'], obj, { etype: 'user', username: user.name, account: obj.CloneSafeUser(user), action: 'accountcreate', msg: 'Account created, name is ' + name, domain: domain.id });
                         return fn(null, user._id);
                     } else {
                         // This is an existing user
+                        // If the display username has changes, update it.
+                        if (user.name != username) {
+                            user.name = username;
+                            db.SetUser(user);
+                            parent.DispatchEvent(['*', 'server-users', user._id], obj, { etype: 'user', username: user.name, account: obj.CloneSafeUser(user), action: 'accountchange', msg: 'Changed account display name to ' + username, domain: domain.id });
+                        }
+                        // If user is locker out, block here.
                         if ((user.siteadmin) && (user.siteadmin != 0xFFFFFFFF) && (user.siteadmin & 32) != 0) { fn('locked'); return; }
                         return fn(null, user._id);
                     }
@@ -676,7 +722,13 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
         const domain = checkUserIpAddress(req, res);
         if ((domain == null) || (domain.auth == 'sspi') || (domain.auth == 'ldap')) { res.sendStatus(401); return; }
 
-        if ((domain.newaccounts === 0) || (domain.newaccounts === false)) { res.sendStatus(401); return; }
+        // Check if we are allowed to create new users using the login screen
+        var domainUserCount = -1;
+        if ((domain.newaccounts !== 1) && (domain.newaccounts !== true)) {
+            domainUserCount = 0;
+            for (var i in obj.users) { if (obj.users[i].domain == domain.id) { domainUserCount++; } }
+            if (domainUserCount > 0) { res.sendStatus(401); return; }
+        }
 
         // Check if this request is for an allows email domain
         if ((domain.newaccountemaildomains != null) && Array.isArray(domain.newaccountemaildomains)) {
@@ -732,9 +784,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
                             } else {
                                 var user = { type: 'user', _id: 'user/' + domain.id + '/' + req.body.username.toLowerCase(), name: req.body.username, email: req.body.email, creation: Math.floor(Date.now() / 1000), login: Math.floor(Date.now() / 1000), domain: domain.id };
                                 if ((domain.passwordrequirements != null) && (domain.passwordrequirements.hint === true) && (req.body.apasswordhint)) { var hint = req.body.apasswordhint; if (hint.length > 250) { hint = hint.substring(0, 250); } user.passhint = hint; }
-                                var usercount = 0;
-                                for (var i in obj.users) { if (obj.users[i].domain == domain.id) { usercount++; } }
-                                if (usercount == 0) { user.siteadmin = 0xFFFFFFFF; if (domain.newaccounts === 2) { domain.newaccounts = 0; } } // If this is the first user, give the account site admin.
+                                if (domainUserCount == 0) { user.siteadmin = 0xFFFFFFFF; /*if (domain.newaccounts === 2) { delete domain.newaccounts; }*/ } // If this is the first user, give the account site admin.
                                 obj.users[user._id] = user;
                                 req.session.userid = user._id;
                                 req.session.domainid = domain.id;
@@ -1309,21 +1359,25 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
         if (msg != null) message = '<p class="msg success">' + msg + '</p>';
         var emailcheck = ((obj.parent.mailserver != null) && (domain.auth != 'sspi'));
 
+        // Check if we are allowed to create new users using the login screen
+        var newAccountsAllowed = true;
+        if ((domain.newaccounts !== 1) && (domain.newaccounts !== true)) { for (var i in obj.users) { if (obj.users[i].domain == domain.id) { newAccountsAllowed = false; break; } } }
+
         if (obj.args.minify && !req.query.nominify) {
             // Try to server the minified version if we can.
             try {
-                res.render(obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile-min' : 'login-min'), { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: domain.newaccounts, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: emailcheck, features: features, sessiontime: args.sessiontime, passRequirements: passRequirements, footer: (domain.footer == null) ? '' : domain.footer, hkey: encodeURIComponent(hardwareKeyChallenge), message: message, passhint: passhint, welcometext: domain.welcometext?encodeURIComponent(domain.welcometext):null });
+                res.render(obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile-min' : 'login-min'), { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: newAccountsAllowed, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: emailcheck, features: features, sessiontime: args.sessiontime, passRequirements: passRequirements, footer: (domain.footer == null) ? '' : domain.footer, hkey: encodeURIComponent(hardwareKeyChallenge), message: message, passhint: passhint, welcometext: domain.welcometext?encodeURIComponent(domain.welcometext):null });
             } catch (ex) {
                 // In case of an exception, serve the non-minified version.
-                res.render(obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile' : 'login'), { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: domain.newaccounts, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: emailcheck, features: features, sessiontime: args.sessiontime, passRequirements: passRequirements, footer: (domain.footer == null) ? '' : domain.footer, hkey: encodeURIComponent(hardwareKeyChallenge), message: message, passhint: passhint, welcometext: domain.welcometext ? encodeURIComponent(domain.welcometext) : null });
+                res.render(obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile' : 'login'), { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: newAccountsAllowed, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: emailcheck, features: features, sessiontime: args.sessiontime, passRequirements: passRequirements, footer: (domain.footer == null) ? '' : domain.footer, hkey: encodeURIComponent(hardwareKeyChallenge), message: message, passhint: passhint, welcometext: domain.welcometext ? encodeURIComponent(domain.welcometext) : null });
             }
         } else {
             // Serve non-minified version of web pages.
-            res.render(obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile' : 'login'), { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: domain.newaccounts, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: emailcheck, features: features, sessiontime: args.sessiontime, passRequirements: passRequirements, footer: (domain.footer == null) ? '' : domain.footer, hkey: encodeURIComponent(hardwareKeyChallenge), message: message, passhint: passhint, welcometext: domain.welcometext ? encodeURIComponent(domain.welcometext) : null });
+            res.render(obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile' : 'login'), { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: newAccountsAllowed, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: emailcheck, features: features, sessiontime: args.sessiontime, passRequirements: passRequirements, footer: (domain.footer == null) ? '' : domain.footer, hkey: encodeURIComponent(hardwareKeyChallenge), message: message, passhint: passhint, welcometext: domain.welcometext ? encodeURIComponent(domain.welcometext) : null });
         }
 
         /*
-        var xoptions = { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: domain.newaccounts, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: obj.parent.mailserver != null, features: features, footer: (domain.footer == null) ? '' : domain.footer };
+        var xoptions = { loginmode: loginmode, rootCertLink: getRootCertLink(), title: domain.title, title2: domain.title2, newAccount: newAccountsAllowed, newAccountPass: (((domain.newaccountspass == null) || (domain.newaccountspass == '')) ? 0 : 1), serverDnsName: obj.getWebServerName(domain), serverPublicPort: httpsPort, emailcheck: obj.parent.mailserver != null, features: features, footer: (domain.footer == null) ? '' : domain.footer };
         var xpath = obj.path.join(obj.parent.webViewsPath, isMobileBrowser(req) ? 'login-mobile' : 'login');
         console.log('Render...');
         res.render(xpath, xoptions, function (err, html) {
@@ -1725,7 +1779,15 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
         const subscriptions = [userid, 'server-global'];
         if (user.siteadmin != null) {
             if (user.siteadmin == 0xFFFFFFFF) subscriptions.push('*');
-            if ((user.siteadmin & 2) != 0) subscriptions.push('server-users');
+            if ((user.siteadmin & 2) != 0) {
+                if ((user.groups == null) || (user.groups.length == 0)) {
+                    // Subscribe to all user changes
+                    subscriptions.push('server-users');
+                } else {
+                    // Subscribe to user changes for some groups
+                    for (var i in user.groups) { subscriptions.push('server-users:' + i); }
+                }
+            }
         }
         if (user.links != null) { for (var i in user.links) { subscriptions.push(i); } }
         obj.parent.RemoveAllEventDispatch(target);
@@ -1902,7 +1964,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
                 // When data is received from the web socket, forward the data into the associated TCP connection.
                 ws.on('message', function (msg) {
                     if (obj.parent.debugLevel >= 1) { // DEBUG
-                        Debug(1, 'TCP relay data to ' + node.host + ', ' + msg.length + ' bytes');
+                        Debug(2, 'TCP relay data to ' + node.host + ', ' + msg.length + ' bytes');
                         if (obj.parent.debugLevel >= 4) { Debug(4, '  ' + msg.toString('hex')); }
                     }
                     msg = msg.toString('binary');
@@ -1952,7 +2014,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
                 // When we receive data on the TCP connection, forward it back into the web socket connection.
                 ws.forwardclient.on('data', function (data) {
                     if (obj.parent.debugLevel >= 1) { // DEBUG
-                        Debug(1, 'TCP relay data from ' + node.host + ', ' + data.length + ' bytes.');
+                        Debug(2, 'TCP relay data from ' + node.host + ', ' + data.length + ' bytes.');
                         if (obj.parent.debugLevel >= 4) { Debug(4, '  ' + Buffer.from(data, 'binary').toString('hex')); }
                     }
                     if (ws.interceptor) { data = ws.interceptor.processAmtData(data); } // Run data thru interceptor
@@ -2278,6 +2340,12 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
                 if (obj.args.lanonly != true) { meshaction.serverUrl = ((obj.args.notls == true) ? 'ws://' : 'wss://') + obj.getWebServerName(domain) + ':' + httpsPort + '/' + ((domain.id == '') ? '' : ('/' + domain.id)) + 'meshrelay.ashx'; }
                 res.set({ 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Type': 'text/plain', 'Content-Disposition': 'attachment; filename=meshaction.txt' });
                 res.send(JSON.stringify(meshaction, null, ' '));
+            } else if (req.query.meshaction == 'winrouter') {
+                var p = obj.path.join(__dirname, 'agents', 'MeshCentralRouter.exe');
+                if (obj.fs.existsSync(p)) {
+                    res.set({ 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0', 'Content-Type': 'text/plain', 'Content-Disposition': 'attachment; filename=MeshCentralRouter.exe' });
+                    try { res.sendFile(p); } catch (e) { res.sendStatus(404); }
+                } else { res.sendStatus(404); }
             } else {
                 res.sendStatus(401);
             }
@@ -2564,6 +2632,7 @@ module.exports.CreateWebServer = function (parent, db, args, certificates) {
             obj.app.ws(url + 'meshrelay.ashx', function (ws, req) { PerformWSSessionAuth(ws, req, true, function (ws1, req1, domain, user, cookie) { obj.meshRelayHandler.CreateMeshRelay(obj, ws1, req1, domain, user, cookie); }); });
             obj.app.get(url + 'webrelay.ashx', function (req, res) { res.send('Websocket connection expected'); });
             obj.app.ws(url + 'webrelay.ashx', function (ws, req) { PerformWSSessionAuth(ws, req, false, handleRelayWebSocket); });
+            obj.app.ws(url + 'webider.ashx', function (ws, req) { PerformWSSessionAuth(ws, req, false, function (ws1, req1, domain, user, cookie) { obj.meshIderHandler.CreateAmtIderSession(obj, obj.db, ws1, req1, obj.args, domain, user); }); });
             obj.app.ws(url + 'control.ashx', function (ws, req) { PerformWSSessionAuth(ws, req, false, function (ws1, req1, domain, user, cookie) { obj.meshUserHandler.CreateMeshUser(obj, obj.db, ws1, req1, obj.args, domain, user); }); });
             obj.app.get(url + 'logo.png', handleLogoRequest);
             obj.app.get(url + 'welcome.jpg', handleWelcomeImageRequest);

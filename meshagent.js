@@ -773,14 +773,23 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
         //console.log('recoveryAgentCoreIsStable()');
 
         // Fetch the the real agent nodeid
-        db.Get('da' + obj.dbNodeKey, function (err, nodes) {
-            if (nodes.length == 1) {
-                obj.realNodeKey = nodes[0].raid;
-                obj.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: obj.realNodeKey } }));
-            } else {
-                obj.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: null } }));
+        db.Get('da' + obj.dbNodeKey, function (err, nodes, self)
+        {
+            if (nodes.length == 1)
+            {
+                self.realNodeKey = nodes[0].raid;
+
+                // Get agent connection state
+                var agentConnected = false;
+                var state = parent.parent.GetConnectivityState(self.realNodeKey);
+                if (state) { agentConnected = ((state.connectivity & 1) != 0) }
+
+                self.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: self.realNodeKey, agent: agentConnected } }));
+            } else
+            {
+                self.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: null } }));
             }
-        });
+        }, obj);
     }
 
     function agentCoreIsStable() {
@@ -1105,9 +1114,10 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
                             switch (command.value.command) {
                                 case 'register': {
                                     // Only main agent can do this
-                                    if (((obj.agentInfo.capabilities & 0x40) == 0) && (typeof command.value.command.value == 'string') && (command.value.command.value.length == 64)) {
+                                    if (((obj.agentInfo.capabilities & 0x40) == 0) && (typeof command.value.value == 'string') && (command.value.value.length == 64))
+                                    {
                                         // Store links to diagnostic agent id
-                                        var daNodeKey = 'node/' + domain.id + '/' + command.value.command.value;
+                                        var daNodeKey = 'node/' + domain.id + '/' + db.escapeBase64(command.value.value);
                                         db.Set({ _id: 'da' + daNodeKey, domain: domain.id, time: obj.connectTime, raid: obj.dbNodeKey });  // DiagnosticAgent --> Agent
                                         db.Set({ _id: 'ra' + obj.dbNodeKey, domain: domain.id, time: obj.connectTime, daid: daNodeKey });  // Agent --> DiagnosticAgent
                                     }
@@ -1120,7 +1130,13 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
                                         db.Get('da' + obj.dbNodeKey, function (err, nodes) {
                                             if (nodes.length == 1) {
                                                 obj.realNodeKey = nodes[0].raid;
-                                                obj.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: obj.realNodeKey } }));
+
+                                                // Get agent connection state
+                                                var agentConnected = false;
+                                                var state = parent.parent.GetConnectivityState(obj.realNodeKey);
+                                                if (state) { agentConnected = ((state.connectivity & 1) != 0) }
+
+                                                obj.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: obj.realNodeKey, agent: agentConnected } }));
                                             } else {
                                                 obj.send(JSON.stringify({ action: 'diagnostic', value: { command: 'query', value: null } }));
                                             }
@@ -1130,9 +1146,10 @@ module.exports.CreateMeshAgent = function (parent, db, ws, req, args, domain) {
                                 }
                                 case 'log': {
                                     // Only the diagnostic agent can do
-                                    if (((obj.agentInfo.capabilities & 0x40) != 0) && (typeof command.value.command.value == 'string') && (command.value.command.value.length < 256)) {
+                                    if (((obj.agentInfo.capabilities & 0x40) != 0) && (typeof command.value.value == 'string') && (command.value.value.length < 256))
+                                    {
                                         // Log a value in the event log of the main again
-                                        var event = { etype: 'node', action: 'diagnostic', nodeid: obj.dbNodeKey, domain: domain.id, msg: command.value.command.value };
+                                        var event = { etype: 'node', action: 'diagnostic', nodeid: obj.realNodeKey, domain: domain.id, msg: command.value.value };
                                         parent.parent.DispatchEvent(['*', obj.dbMeshKey], obj, event);
                                     }
                                     break;

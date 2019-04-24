@@ -94,6 +94,9 @@
     <Compile Include="amtevents.js" />
     <Compile Include="amtscanner.js" />
     <Compile Include="amtscript.js" />
+    <Compile Include="amt\amt-ider-module.js" />
+    <Compile Include="amt\amt-ider.js" />
+    <Compile Include="amt\amt-redir-mesh.js" />
     <Compile Include="exeHandler.js" />
     <Compile Include="letsencrypt.js" />
     <Compile Include="meshaccelerator.js" />
@@ -275,6 +278,7 @@
     <Folder Include="agents\modules_meshcmd_min\" />
     <Folder Include="agents\modules_meshcore\" />
     <Folder Include="agents\modules_meshcore_min\" />
+    <Folder Include="amt\" />
     <Folder Include="public" />
     <Folder Include="public\clickonce\" />
     <Folder Include="public\clickonce\minirouter\" />

@@ -155,7 +155,7 @@ function CreateMeshCentralServer(config, args) {
                 var arg = process.argv[i];
                 if (arg.length > 0) {
                     if (startLine.length > 0) startLine += ' ';
-                    if (arg.indexOf(' ') >= 0) { startLine += '"' + arg + '"'; } else { startLine += arg; }
+                    if ((arg.indexOf(' ') >= 0) || (arg.indexOf('&') >= 0)) { startLine += '"' + arg + '"'; } else { startLine += arg; }
                 }
             }
             obj.launchChildServer(startLine);
@@ -1204,8 +1204,8 @@ function CreateMeshCentralServer(config, args) {
 
         // Read the agent recovery core if present
         var meshAgentRecoveryCore = null;
-        if (obj.fs.existsSync(obj.path.join(__dirname, 'agents', 'agentrecoverycore.js')) == true) {
-            try { meshAgentRecoveryCore = obj.fs.readFileSync(obj.path.join(__dirname, 'agents', 'agentrecoverycore.js')).toString(); } catch (ex) { }
+        if (obj.fs.existsSync(obj.path.join(__dirname, 'agents', 'meshcore_diagnostic.js')) == true) {
+            try { meshAgentRecoveryCore = obj.fs.readFileSync(obj.path.join(__dirname, 'agents', 'meshcore_diagnostic.js')).toString(); } catch (ex) { }
             if (meshAgentRecoveryCore != null) {
                 modulesAdd['windows-agentrecovery'] = ['var addedModules = [];\r\n'];
                 modulesAdd['linux-agentrecovery'] = ['var addedModules = [];\r\n'];
@@ -1696,7 +1696,9 @@ function mainStart(args) {
         var ldap = false;
         var allsspi = true;
         var yubikey = false;
-        if (require('os').platform() == 'win32') { for (var i in config.domains) { if (config.domains[i].auth == 'sspi') { sspi = true; } else { allsspi = false; } } } else { allsspi = false; }
+        var domainCount = 0;
+        if (require('os').platform() == 'win32') { for (var i in config.domains) { domainCount++; if (config.domains[i].auth == 'sspi') { sspi = true; } else { allsspi = false; } } } else { allsspi = false; }
+        if (domainCount == 0) { allsspi = false; }
         for (var i in config.domains) {
             if (config.domains[i].yubikey != null) { yubikey = true; }
             if (config.domains[i].auth == 'ldap') { ldap = true; }
